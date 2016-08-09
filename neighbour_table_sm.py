@@ -24,21 +24,20 @@ def table(zones, idFld, output, exterior=True, selfrel=True):
     else:
       jointo = zones
     common.progress('finding neighbours')
-    joined = pathman.tmpFC()
-    fm = arcpy.FieldMappings()
-    fm.addFieldMap(common.fieldMap(zones, idFld, common.NEIGH_FROM_FLD, 'FIRST'))
-    fm.addFieldMap(common.fieldMap(jointo, idFld, common.NEIGH_TO_FLD, 'FIRST'))
-    arcpy.SpatialJoin_analysis(zones, jointo, joined, 'JOIN_ONE_TO_MANY', 'KEEP_COMMON', fm, 'INTERSECT', TOLERANCE)
+    swm = pathman.tmpFile(ext='swm')
+    arcpy.GenerateSpatialWeightsMatrix_stats(jointo, idFld, swm, 'CONTIGUITY_EDGES_CORNERS')
     common.progress('converting to neighbour table')
-    fm2 = arcpy.FieldMappings()
-    fm.addFieldMap(common.fieldMap(joined, common.NEIGH_FROM_FLD, common.NEIGH_FROM_FLD, 'FIRST'))
-    fm.addFieldMap(common.fieldMap(joined, common.NEIGH_TO_FLD, common.NEIGH_TO_FLD, 'FIRST'))
+    tmpTable = pathman.tmpTable()
+    arcpy.ConvertSpatialWeightsMatrixtoTable_stats(swm, tmpTable)
+    fm = arcpy.FieldMappings()
+    fm.addFieldMap(common.fieldMap(tmpTable, idFld, common.NEIGH_FROM_FLD, 'FIRST'))
+    fm.addFieldMap(common.fieldMap(tmpTable, 'NID', common.NEIGH_TO_FLD, 'FIRST'))
     if selfrel:
-      query = ''
+      query = common.safeQuery('[{}] <> {}'.format(common.NEIGH_FROM_FLD, EXTERIOR_ID), tmpTable)
     else:
       query = common.safeQuery('[{0}] <> [{1}] AND [{0}] <> {2}'.format(
-        common.NEIGH_FROM_FLD, common.NEIGH_TO_FLD, EXTERIOR_ID), joined)
-    arcpy.TableToTable_conversion(joined, pathman.getLocation(), pathman.getOutputName(), query, fm2)
+        common.NEIGH_FROM_FLD, common.NEIGH_TO_FLD, EXTERIOR_ID), tmpTable)
+    arcpy.TableToTable_conversion(tmpTable, pathman.getLocation(), pathman.getOutputName(), query, fm)
     common.clearFields(output, [common.NEIGH_FROM_FLD, common.NEIGH_TO_FLD])
   return output
 
