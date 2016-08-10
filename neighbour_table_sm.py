@@ -7,6 +7,8 @@ EXTERIOR_ID = -1
 def table(zones, idFld, output, exterior=True, selfrel=True):
   common.debug('running neighbour table', zones, idFld, output, exterior, selfrel)
   with common.PathManager(output) as pathman:
+    idKeeper = common.IDFieldKeeper(zones, idFld)
+    intIDFld = idKeeper.intIDField()
     if exterior:
       common.progress('mapping zone surroundings')
       buffer = pathman.tmpFC()
@@ -15,8 +17,7 @@ def table(zones, idFld, output, exterior=True, selfrel=True):
       erased = pathman.tmpFC()
       arcpy.Erase_analysis(buffer, zones, erased, TOLERANCE)
       common.progress('identifying exterior zone')
-      common.calcField(erased, idFld, EXTERIOR_ID,
-        common.pyTypeOfField(zones, idFld))
+      common.calcField(erased, intIDFld, EXTERIOR_ID, int)
       # common.progress('eliminating sliver polygons')
       common.progress('merging exterior zone')
       jointo = pathman.tmpFC()
@@ -25,18 +26,19 @@ def table(zones, idFld, output, exterior=True, selfrel=True):
       jointo = zones
     common.progress('finding neighbours')
     swm = pathman.tmpFile(ext='swm')
-    arcpy.GenerateSpatialWeightsMatrix_stats(jointo, idFld, swm, 'CONTIGUITY_EDGES_CORNERS')
+    arcpy.GenerateSpatialWeightsMatrix_stats(jointo, intIDFld, swm, 'CONTIGUITY_EDGES_CORNERS')
     common.progress('converting to neighbour table')
     tmpTable = pathman.tmpTable()
     arcpy.ConvertSpatialWeightsMatrixtoTable_stats(swm, tmpTable)
+    fromFld, toFld = idKeeper.transform(tmpTable, [intIDFld, 'NID'])
     fm = arcpy.FieldMappings()
-    fm.addFieldMap(common.fieldMap(tmpTable, idFld, common.NEIGH_FROM_FLD, 'FIRST'))
-    fm.addFieldMap(common.fieldMap(tmpTable, 'NID', common.NEIGH_TO_FLD, 'FIRST'))
+    fm.addFieldMap(common.fieldMap(tmpTable, fromFld, common.NEIGH_FROM_FLD, 'FIRST'))
+    fm.addFieldMap(common.fieldMap(tmpTable, toFld, common.NEIGH_TO_FLD, 'FIRST'))
     if selfrel:
-      query = common.safeQuery('[{}] <> {}'.format(common.NEIGH_FROM_FLD, EXTERIOR_ID), tmpTable)
+      query = common.safeQuery("[{}] <> '{}'".format(fromFld, EXTERIOR_ID), tmpTable)
     else:
-      query = common.safeQuery('[{0}] <> [{1}] AND [{0}] <> {2}'.format(
-        common.NEIGH_FROM_FLD, common.NEIGH_TO_FLD, EXTERIOR_ID), tmpTable)
+      query = common.safeQuery("[{0}] <> [{1}] AND [{0}] <> '{2}'".format(
+        fromFld, toFld, EXTERIOR_ID), tmpTable)
     arcpy.TableToTable_conversion(tmpTable, pathman.getLocation(), pathman.getOutputName(), query, fm)
     common.clearFields(output, [common.NEIGH_FROM_FLD, common.NEIGH_TO_FLD])
   return output

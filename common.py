@@ -16,6 +16,7 @@ except ImportError:
 
 # field type names for new fields
 PY_TYPE_TO_OUT = {unicode : 'TEXT', str : 'TEXT', int : 'LONG', float : 'DOUBLE', numpy.float64 : 'DOUBLE', bool : 'SHORT'}
+PY_TYPE_TO_IN = {unicode : 'String', str : 'String', int : 'Integer', float : 'Double', numpy.float64 : 'Double', bool : 'SmallInteger'}
 IN_TYPE_TO_PY = {'Integer' : int, 'Double' : float, 'String' : unicode, 'SmallInteger' : int, 'OID' : int}
 PY_TYPE_TO_STR = {unicode : 'unicode', str : 'str', int : 'int', float : 'float', numpy.float64 : 'float', bool : 'bool'}
 INT_FIELD_DESCRIBE = 'Integer'
@@ -45,7 +46,8 @@ def query(target, mssql, *args):
     return main.replace('[', '"').replace(']', '"')
     
 def safeQuery(query, target):
-  path = toFeatureClass(target)
+  path = toPath(target)
+  debug('query', path)
   if '.mdb' in path: # is in personal geodatabase (square brackets used)
     return query
   else: # quotes used
@@ -66,6 +68,12 @@ def inTypeToPy(inType):
 def pyTypeToOut(pyType):
   try:
     return PY_TYPE_TO_OUT[pyType]
+  except KeyError:
+    raise ValueError, 'field of unknown type: ' + str(pyType)
+    
+def pyTypeToIn(pyType):
+  try:
+    return PY_TYPE_TO_IN[pyType]
   except KeyError:
     raise ValueError, 'field of unknown type: ' + str(pyType)
     
@@ -104,20 +112,20 @@ def pyStrOfType(pyType):
   except KeyError:
     raise ValueError, 'field of unknown type: ' + str(pyType)
 
-def addFields(layer, fields, strict=False):
-  fieldList = fieldTypeList(layer)
-  for name, fldType in fields:
-    if name in fieldList:
-      if strict:
-        raise ValueError, 'field %s already exists' % name
-      else:
-        if inTypeToPy(fieldList[name]) == fldType:
-          warning('field %s already exists' % name)
-          continue
-        else:
-          warning('field %s already exists with different type %s: will be deleted' % (name, fieldList[name]))
-          arcpy.DeleteField_management(layer, [name])
-    arcpy.AddField_management(layer, name, pyTypeToOut(fldType))
+# def addFields(layer, fields, strict=False):
+  # fieldList = fieldTypeList(layer)
+  # for name, fldType in fields:
+    # if name in fieldList:
+      # if strict:
+        # raise ValueError, 'field %s already exists' % name
+      # else:
+        # if inTypeToPy(fieldList[name]) == fldType:
+          # warning('field %s already exists' % name)
+          # continue
+        # else:
+          # warning('field %s already exists with different type %s: will be deleted' % (name, fieldList[name]))
+          # arcpy.DeleteField_management(layer, [name])
+    # arcpy.AddField_management(layer, name, pyTypeToOut(fldType))
 
 def featurePath(location, file, ext=DEFAULT_SPATIAL_EXT):
   return addExt(os.path.join(location, file), ext)
@@ -245,14 +253,18 @@ def hasGeometry(layer):
   # print desc.dataType, desc.dataType, desc.dataType
   return (desc.dataType in (u'FeatureLayer', u'FeatureClass', u'ShapeFile'))
   
-def toFeatureClass(layer):
-  desc = arcpy.Describe(layer)
+def toFeatureClass(layer, desc=None):
+  if desc is None: desc = arcpy.Describe(layer)
   if desc.dataType in (u'FeatureClass', u'ShapeFile'):
     return layer
   elif desc.dataType == u'FeatureLayer':
     return desc.dataElement.catalogPath
   else:
-    raise ValueError, 'cannot convert %s (type %s) to feature class' % (layer, desc.dataType, desc.dataElementType)
+    raise ValueError, 'cannot convert %s (type %s/%s) to feature class' % (layer, desc.dataType, desc.dataElementType)
+
+def toPath(layer, desc=None):
+  if desc is None: desc = arcpy.Describe(layer)
+  return desc.catalogPath
   
 def fcName(layer):
   '''Removes the possible extension from a feature class path.'''
@@ -280,7 +292,7 @@ def multiplyDistance(dist, mult):
   distNum, distUnit = dist.split()
   return str(int(float(distNum) * mult)) + ' ' + distUnit
   
-def fieldMap(source, srcName, tgtName, mergeRule):
+def fieldMap(source, srcName, tgtName, mergeRule, outType=None):
   map = arcpy.FieldMap()
   map.addInputField(source, srcName)
   map.mergeRule = mergeRule
@@ -288,6 +300,8 @@ def fieldMap(source, srcName, tgtName, mergeRule):
   outFld.name = tgtName
   outFld.alias = tgtName
   outFld.aliasName = tgtName
+  if outType is not None:
+    outFld.type = pyTypeToIn(outType)
   map.outputField = outFld
   return map
 
@@ -757,6 +771,59 @@ class PathManager:
 
   def baseName(self, path):
     return os.path.basename(path)
+    
+class IDFieldKeeper:
+  i = 0
+
+  def __init__(self, origin, idFld):
+    self.origin = origin
+    self.idFld = idFld
+    self.idType = pyTypeOfField(self.origin, self.idFld)
+    self.tmpIDFld = None
+  
+  def intIDField(self):
+    if self.idType is not int:
+      self.tmpIDFld = self.createField(self.origin, int)
+      return self.tmpIDFld
+    else:
+      return self.idFld
+  
+  def transform(self, target, srcFields, tgtFields=None):
+    if self.tmpIDFld:
+      fldCount = len(srcFields)
+      fldRange = range(fldCount)
+      if tgtFields is None:
+        tgtFields = [self.randFieldName() for i in fldRange]
+      transl = self.loadTransDict()
+      addFields(target, tgtFields, types=[self.idType for i in fldRange])
+      cur = arcpy.da.UpdateCursor(target, srcFields + tgtFields)
+      for row in cur:
+        for i in fldRange:
+          row[i + fldCount] = transl[row[i]] if row[i] in transl else row[i]
+        cur.updateRow(row)
+      del cur
+      return tgtFields
+    else:
+      return srcFields
+  
+  def loadTransDict(self):
+    cur = arcpy.da.SearchCursor(self.origin, (self.idFld, self.tmpIDFld))
+    trans = {}
+    for oldID, newID in cur:
+      trans[newID] = oldID
+    return trans
+  
+  @classmethod
+  def createField(cls, target, ftype):
+    fname = cls.randFieldName()
+    calcField(target, fname, '!{}!'.format(ensureIDField(target)), ftype)
+    return fname
+    
+  @classmethod
+  def randFieldName(cls):
+    cls.i += 1
+    return 'T{:02d}{:05d}'.format(cls.i, int(random.random() * 1e4))
+    
     
 def warning(text):
   '''Displays a warning to the tool user.'''

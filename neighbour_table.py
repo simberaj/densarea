@@ -34,9 +34,9 @@ def table(zones, idFld, output, exterior=True, selfrel=True):
     fm.addFieldMap(common.fieldMap(joined, common.NEIGH_FROM_FLD, common.NEIGH_FROM_FLD, 'FIRST'))
     fm.addFieldMap(common.fieldMap(joined, common.NEIGH_TO_FLD, common.NEIGH_TO_FLD, 'FIRST'))
     if selfrel:
-      query = ''
+      query = common.safeQuery("[{}] <> '{}'".format(common.NEIGH_FROM_FLD, EXTERIOR_ID), joined)
     else:
-      query = common.safeQuery('[{0}] <> [{1}] AND [{0}] <> {2}'.format(
+      query = common.safeQuery("[{0}] <> [{1}] AND [{0}] <> '{2}'".format(
         common.NEIGH_FROM_FLD, common.NEIGH_TO_FLD, EXTERIOR_ID), joined)
     arcpy.TableToTable_conversion(joined, pathman.getLocation(), pathman.getOutputName(), query, fm2)
     common.clearFields(output, [common.NEIGH_FROM_FLD, common.NEIGH_TO_FLD])
